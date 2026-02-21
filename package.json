@@ -1,0 +1,16 @@
+{
+  "name": "openai-codex-auth-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "*"
+  }
+}
