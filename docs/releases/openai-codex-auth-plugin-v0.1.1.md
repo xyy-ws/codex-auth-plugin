@@ -1,22 +1,26 @@
 # openai-codex-auth-plugin v0.1.1
 
-Hotfix 版本：修复 `deactivated_workspace` 场景下不会自动切换到下一个 profile/token 的问题。
+Hotfix 版本：修复 `deactivated_workspace` 场景下 profile 未正确失效/切换的问题。
 
 ## 变更摘要
 - 新增失败识别：`deactivated_workspace` / `workspace_deactivated`
-- failover 决策更新：上述错误将触发当前 profile 冷却并切换到下一可用 profile
-- 新增测试：覆盖 `{"detail":{"code":"deactivated_workspace"}}` 报文识别与切换逻辑
+- 覆盖报文：`{"detail":{"code":"deactivated_workspace"}}`
+- failover 策略更新：按 billing-style 处理（disabled/backoff），并切换到下一可用 profile
+- 补充热修说明文档与插件 manifest
 
 ## 影响文件
 - `tools/codex-failover/src/failover.mjs`
 - `tools/codex-failover/test/failover.test.mjs`
 - `tools/codex-failover/src/cli.mjs`
 - `tools/codex-failover/README.md`
+- `openclaw.plugin.json`
+- `HOTFIX-deactivated-workspace.md`
+- `package.json`（版本号 `0.1.1`）
 
 ## 验证
 ```bash
 node --test tools/codex-failover/test/failover.test.mjs
+openclaw gateway restart
+openclaw models status --json
 ```
-
-## 升级说明
-如果你已通过仓库拉取 `main`，直接更新到最新提交即可，无需额外配置变更。
+实测通过：`deactivated_workspace` 不再被重复使用，失败 profile 会进入不可用窗口并自动切换。
