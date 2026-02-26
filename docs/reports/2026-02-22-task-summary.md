@@ -6,6 +6,8 @@ Codex auth plugin repository sync and progress baseline.
 ## Completed
 - Synced plugin core files from workspace into dedicated repository.
 - Added task summary for cross-repo progress tracking.
+- Added failover hotfix for `deactivated_workspace` so invalid/deactivated workspace tokens are skipped automatically.
+- Added/updated codex-failover assets under `tools/codex-failover` and test coverage.
 
 ## Current status
 - Repository is now independent and ready for future release cadence.
