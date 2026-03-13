@@ -4,11 +4,13 @@ set -euo pipefail
 OPENCLAW_DIST="/root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
-mapfile -t FILES < <(grep -RIl "function classifyFailoverReason(raw)" "$OPENCLAW_DIST"/pi-embedded-helpers-*.js)
+mapfile -t FILES < <(grep -RIl "function classifyFailoverReason(raw)" "$OPENCLAW_DIST" 2>/dev/null | sort -u)
 if [ ${#FILES[@]} -eq 0 ]; then
-  echo "No target helper bundles found"
+  echo "No target helper bundles found under $OPENCLAW_DIST"
   exit 1
 fi
+
+echo "target_count=${#FILES[@]}"
 
 patched=0
 for f in "${FILES[@]}"; do

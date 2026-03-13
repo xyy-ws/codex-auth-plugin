@@ -12,15 +12,24 @@ When provider responses include:
 the profile is now classified as **billing**-type failover reason (disabled/backoff), instead of being reused.
 
 ## Runtime patch location (current host)
-Patched OpenClaw runtime bundles (discovered dynamically by script):
+Patched OpenClaw runtime bundles are now discovered dynamically by script.
 
-- `/root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist/pi-embedded-helpers-CfNmwTZm.js`
-- `/root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist/pi-embedded-helpers-CfzQiGiz.js`
-- `/root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist/pi-embedded-helpers-DTexeCSz.js`
-- `/root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist/pi-embedded-helpers-uJGEQMgi.js`
+### 2026.3.12 compatibility note
+OpenClaw `2026.3.12` no longer uses the old fixed `pi-embedded-helpers-*.js` target pattern as the only patch surface.
+The relevant `classifyFailoverReason(raw)` logic is distributed across multiple bundles under `dist/` (notably `dist/plugin-sdk/*`, plus several top-level bundles).
 
-(Names change across OpenClaw versions; use `tools/patch-deactivated-workspace-runtime.sh` to locate and patch current bundles.)
+On this host, the updated script successfully patched **27 bundles** by scanning the whole `dist/` tree for `classifyFailoverReason(raw)` and injecting:
+- `deactivated_workspace`
+- `workspace deactivated`
+
+Use this to verify current hits:
+
+```bash
+grep -RIn "deactivated_workspace\|workspace deactivated" \
+  /root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist
+```
 
 ## Validation
-- Gateway restarted successfully.
-- User-side test passed after restart.
+- The runtime patch script was updated to dynamic bundle discovery and executed successfully on OpenClaw `2026.3.12`.
+- Verification confirmed `deactivated_workspace` markers are present in the patched runtime bundles.
+- Note: this hotfix addresses Codex auth/failover classification only; it does **not** by itself resolve unrelated gateway WebSocket handshake timeout issues.

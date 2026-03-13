@@ -6,7 +6,7 @@ Runtime hotfix 发布：补齐 `deactivated_workspace` 在当前 OpenClaw 运行
 - 新增运行时补丁脚本：
   - `tools/patch-deactivated-workspace-runtime.sh`
 - 脚本行为：
-  1. 动态定位当前版本的 `pi-embedded-helpers-*.js`
+  1. 动态扫描当前版本 `dist/` 下所有包含 `classifyFailoverReason(raw)` 的 bundle（不再假设固定文件名）
   2. 将 `deactivated_workspace / workspace deactivated` 注入 failover 识别词
   3. 自动备份原文件（带时间戳）
   4. 重启 gateway 并输出状态
@@ -30,13 +30,18 @@ cd /root/.openclaw/repos/codex-auth-plugin
 ```bash
 openclaw gateway status
 grep -RIn "deactivated_workspace\|workspace deactivated" \
-  /root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist/pi-embedded-helpers-*.js
+  /root/.nvm/versions/node/v22.22.0/lib/node_modules/openclaw/dist
 ```
 
 ## 影响文件
 - `tools/patch-deactivated-workspace-runtime.sh`
 - `HOTFIX-deactivated-workspace.md`
 - `docs/releases/openai-codex-auth-plugin-v0.1.2.md`
+
+## 2026.3.12 兼容性补充
+- 已在 OpenClaw `2026.3.12` 上验证：旧版仅匹配 `pi-embedded-helpers-*.js` 的脚本已失效。
+- 现已改为扫描整个 `dist/` 中包含 `classifyFailoverReason(raw)` 的 bundle，并成功命中 27 个文件。
+- 本次兼容修复只覆盖 `deactivated_workspace` 的 failover 分类热补丁；若升级后还出现 gateway WebSocket 握手超时，应视为独立问题继续排查，不应混同为本插件修复范围。
 
 ## 风险与说明
 - 此版本为“运行时热补丁编排”方案，不是上游 OpenClaw 源码正式发版。
