@@ -12,5 +12,9 @@
   },
   "dependencies": {
     "@mariozechner/pi-ai": "*"
+  },
+  "scripts": {
+    "login:profiled": "node ./tools/login-profiled-codex.mjs",
+    "test": "node --test"
   }
 }
