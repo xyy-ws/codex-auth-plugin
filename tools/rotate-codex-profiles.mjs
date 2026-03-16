@@ -2,14 +2,18 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { chooseProfileCandidates } from '../profile-selector.mjs';
 
+const execFileAsync = promisify(execFile);
 const PROVIDER = 'openai-codex';
 const AUTH_PATH = path.join(os.homedir(), '.openclaw/agents/main/agent/auth-profiles.json');
 const ENABLE_PROBE = process.env.CODEX_ROTATE_PROBE !== '0'; // default ON
-const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 7000);
-const CODEX_PROBE_MODEL = process.env.CODEX_PROBE_MODEL || 'gpt-5-codex';
-const CODEX_PROBE_URL = process.env.CODEX_PROBE_URL || 'https://api.openai.com/v1/responses';
+const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 15000);
+const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/root/.nvm/versions/node/v22.22.0/bin/openclaw';
+const PROBE_AGENT = process.env.CODEX_PROBE_AGENT || 'planner';
+const PROBE_MESSAGE = process.env.CODEX_PROBE_MESSAGE || '__codex_profile_probe__';
 
 function loadAuth() {
   return JSON.parse(fs.readFileSync(AUTH_PATH, 'utf8'));
@@ -17,6 +21,17 @@ function loadAuth() {
 
 function saveAuth(data) {
   fs.writeFileSync(AUTH_PATH, JSON.stringify(data, null, 2) + '\n');
+}
+
+function classifyProbeFailure(raw = '') {
+  const text = String(raw).toLowerCase();
+  if (!text) return 'unknown';
+  if (text.includes('rate limit') || text.includes('429') || text.includes('cooldown')) return 'rate_limit';
+  if (text.includes('billing') || text.includes('insufficient') || text.includes('402')) return 'billing';
+  if (text.includes('workspace deactivated') || text.includes('deactivated_workspace')) return 'workspace_deactivated';
+  if (text.includes('auth') || text.includes('401') || text.includes('403') || text.includes('invalid token') || text.includes('unauthorized')) return 'auth';
+  if (text.includes('timeout')) return 'timeout';
+  return 'unknown';
 }
 
 function scoreProfile(id, auth, now) {
@@ -30,7 +45,6 @@ function scoreProfile(id, auth, now) {
   const disabled = disabledUntil > now;
   const cooling = cooldownUntil > now;
 
-  // 探针模式下，基础分只保留轻量兜底，不再做人为健康队列加权
   let score = 0;
   if (!expired) score += 10;
   if (!disabled) score += 10;
@@ -47,53 +61,52 @@ function scoreProfile(id, auth, now) {
   };
 }
 
-async function probeProfileOAuth(id, profile, stats, now) {
+async function setOrderForProbe(order) {
+  await execFileAsync(OPENCLAW_BIN, [
+    'models',
+    'auth',
+    'order',
+    'set',
+    '--provider',
+    PROVIDER,
+    ...order,
+  ], { timeout: PROBE_TIMEOUT_MS });
+}
+
+async function runCodexProbe() {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      OPENCLAW_BIN,
+      ['agent', '--agent', PROBE_AGENT, '--message', PROBE_MESSAGE, '--timeout', '20', '--json'],
+      { timeout: PROBE_TIMEOUT_MS }
+    );
+    const text = `${stdout || ''}\n${stderr || ''}`;
+    const kind = classifyProbeFailure(text);
+    if (kind === 'unknown') return { ok: true, kind: 'ok', raw: text.slice(0, 500) };
+    if (kind === 'auth' || kind === 'rate_limit' || kind === 'billing' || kind === 'workspace_deactivated') {
+      return { ok: false, kind, raw: text.slice(0, 500) };
+    }
+    return { ok: true, kind: 'ok', raw: text.slice(0, 500) };
+  } catch (e) {
+    const text = `${e?.stdout || ''}\n${e?.stderr || ''}\n${e?.message || ''}`;
+    const kind = classifyProbeFailure(text);
+    return { ok: false, kind, raw: text.slice(0, 500) };
+  }
+}
+
+async function probeProfileOAuth(id, profile, stats, now, originalOrder) {
   if (!profile) return { id, ok: false, kind: 'missing' };
+  if (!profile.access && !profile.refresh) return { id, ok: false, kind: 'no_access' };
 
-  const token = profile?.access;
-  if (!token) return { id, ok: false, kind: 'no_access' };
-
-  // quick local short-circuit before remote probe
   const expires = Number(profile.expires || 0);
   if (expires > 0 && expires <= now) return { id, ok: false, kind: 'auth' };
 
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort('timeout'), PROBE_TIMEOUT_MS);
   try {
-    const res = await fetch(CODEX_PROBE_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: CODEX_PROBE_MODEL,
-        input: 'ping',
-        max_output_tokens: 1,
-      }),
-      signal: ac.signal,
-    });
-
-    if (res.ok) return { id, ok: true, kind: 'ok', status: res.status };
-
-    let bodyText = '';
-    try { bodyText = await res.text(); } catch {}
-    const lower = bodyText.toLowerCase();
-
-    if (res.status === 401 || res.status === 403) return { id, ok: false, kind: 'auth', status: res.status };
-    if (res.status === 429) return { id, ok: false, kind: 'rate_limit', status: res.status };
-    if (res.status === 402 || lower.includes('insufficient') || lower.includes('billing')) {
-      return { id, ok: false, kind: 'billing', status: res.status };
-    }
-    if (lower.includes('workspace deactivated') || lower.includes('deactivated_workspace')) {
-      return { id, ok: false, kind: 'workspace_deactivated', status: res.status };
-    }
-    if (res.status >= 500) return { id, ok: false, kind: 'server', status: res.status };
-    return { id, ok: false, kind: 'http', status: res.status };
-  } catch (e) {
-    return { id, ok: false, kind: String(e).includes('timeout') ? 'timeout' : 'network' };
+    await setOrderForProbe([id]);
+    const res = await runCodexProbe();
+    return { id, ...res };
   } finally {
-    clearTimeout(t);
+    await setOrderForProbe(originalOrder);
   }
 }
 
@@ -115,6 +128,8 @@ function applyProbeAdjustment(scored, probeResults) {
       s.score -= 260;
     } else if (p.kind === 'rate_limit') {
       s.score -= 120;
+    } else if (p.kind === 'timeout' || p.kind === 'network') {
+      s.score -= 80;
     } else {
       s.score -= 40;
     }
@@ -134,12 +149,13 @@ async function main() {
   const base = chooseProfileCandidates(known);
 
   const scored = base.map((id) => scoreProfile(id, auth, now));
+  const originalOrder = [...(auth.order?.[PROVIDER] || base)];
 
   if (ENABLE_PROBE) {
     const probeResults = [];
     for (const s of scored) {
       const stats = auth.usageStats?.[s.id] || {};
-      probeResults.push(await probeProfileOAuth(s.id, s.profile, stats, now));
+      probeResults.push(await probeProfileOAuth(s.id, s.profile, stats, now, originalOrder));
     }
     applyProbeAdjustment(scored, probeResults);
   }
@@ -156,6 +172,13 @@ async function main() {
   }
 
   saveAuth(auth);
+
+  // also apply through CLI to keep agent stores aligned
+  try {
+    await setOrderForProbe(newOrder);
+  } catch {
+    // keep local save as fallback
+  }
 
   console.log('Updated order:', newOrder.join(', '));
   console.log(`Probe mode: ${ENABLE_PROBE ? 'ON' : 'OFF'}`);
