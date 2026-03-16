@@ -15,6 +15,7 @@
   },
   "scripts": {
     "login:profiled": "node ./tools/login-profiled-codex.mjs",
+    "rotate:profiles": "node ./tools/rotate-codex-profiles.mjs",
     "test": "node --test"
   }
 }

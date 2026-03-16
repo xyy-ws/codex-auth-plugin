@@ -12,15 +12,35 @@ const PROVIDER_ID = "openai-codex";
 async function runOAuth(ctx: ProviderAuthContext): Promise<ProviderAuthResult> {
   const configProfileIds = Object.keys((ctx.config as { auth?: { profiles?: Record<string, unknown> } })?.auth?.profiles ?? {});
   const candidates = chooseProfileCandidates(configProfileIds);
-  const selectedProfileId =
-    candidates.length === 1
-      ? candidates[0]
-      : String(
-          await ctx.prompter.select({
-            message: "Choose target auth profile",
-            options: candidates.map((id) => ({ value: id, label: id })),
-          }),
-        );
+  if (candidates.length === 0) {
+    throw new Error("No openai-codex auth profiles are configured.");
+  }
+
+  let selectedProfileId = candidates[0];
+  if (candidates.length > 1) {
+    await ctx.prompter.note(
+      candidates.map((id, i) => `${i + 1}. ${id}`).join("\n"),
+      "Choose target auth profile",
+    );
+    const rawChoice = (await ctx.prompter.text({
+      message: "Enter the profile number or full profile id",
+      initialValue: candidates[0],
+      validate: (value) => {
+        const trimmed = value.trim();
+        if (!trimmed) return "A profile selection is required.";
+        if (candidates.includes(trimmed)) return undefined;
+        const n = Number(trimmed);
+        if (Number.isInteger(n) && n >= 1 && n <= candidates.length) return undefined;
+        return `Choose 1-${candidates.length} or one of: ${candidates.join(", ")}`;
+      },
+    })).trim();
+
+    const n = Number(rawChoice);
+    selectedProfileId = Number.isInteger(n) && n >= 1 && n <= candidates.length ? candidates[n - 1] : rawChoice;
+    if (!candidates.includes(selectedProfileId)) {
+      throw new Error(`Invalid profile selection: ${selectedProfileId}`);
+    }
+  }
 
   const progress = ctx.prompter.progress(`Starting OpenAI Codex OAuth for ${selectedProfileId}…`);
   try {

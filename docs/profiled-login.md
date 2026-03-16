@@ -9,6 +9,8 @@
 
 ## 用法
 
+### 1) 指定 profile 登录（先选 profile，再 OAuth）
+
 ```bash
 cd /root/.openclaw/repos/codex-auth-plugin
 npm run login:profiled
@@ -18,6 +20,19 @@ npm run login:profiled
 
 ```bash
 node ./tools/login-profiled-codex.mjs
+```
+
+### 2) 自动轮动顺序重排（按健康度）
+
+```bash
+cd /root/.openclaw/repos/codex-auth-plugin
+npm run rotate:profiles
+```
+
+或：
+
+```bash
+node ./tools/rotate-codex-profiles.mjs
 ```
 
 ## 行为
