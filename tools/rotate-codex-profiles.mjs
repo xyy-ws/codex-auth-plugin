@@ -6,6 +6,9 @@ import { chooseProfileCandidates } from '../profile-selector.mjs';
 
 const PROVIDER = 'openai-codex';
 const AUTH_PATH = path.join(os.homedir(), '.openclaw/agents/main/agent/auth-profiles.json');
+const PROBE_URL = 'https://api.openai.com/v1/models?limit=1';
+const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 5000);
+const ENABLE_PROBE = process.env.CODEX_ROTATE_PROBE !== '0'; // default ON
 
 function loadAuth() {
   return JSON.parse(fs.readFileSync(AUTH_PATH, 'utf8'));
@@ -33,7 +36,6 @@ function scoreProfile(id, auth, now) {
   const cooling = cooldownUntil > now;
 
   let score = 0;
-  // 强优先：用户指定健康队列 team1/team2/team3（仅在未禁用时）
   const healthyIdx = HEALTHY_PRIORITY.indexOf(id);
   if (healthyIdx >= 0 && !disabled) score += 300 - healthyIdx * 20;
 
@@ -45,16 +47,68 @@ function scoreProfile(id, auth, now) {
   score -= Math.min(err, 50);
 
   const lastUsed = Number(stats.lastUsed || 0);
-  if (lastUsed > 0) score += Math.min((now - lastUsed) / (1000 * 60 * 60), 8); // stale relief
+  if (lastUsed > 0) score += Math.min((now - lastUsed) / (1000 * 60 * 60), 8);
 
   return {
     id,
     score,
     reason: `${healthyIdx >= 0 ? `healthy#${healthyIdx + 1} ` : ''}${expired ? 'expired ' : ''}${disabled ? 'disabled ' : ''}${cooling ? 'cooldown ' : ''}err=${err}`.trim(),
+    profile,
   };
 }
 
-function main() {
+async function probeProfileOAuth(id, profile) {
+  const access = profile?.access;
+  if (!access) return { id, ok: false, kind: 'no_access' };
+
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort('timeout'), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(PROBE_URL, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${access}` },
+      signal: ac.signal,
+    });
+
+    if (res.ok) return { id, ok: true, kind: 'ok', status: res.status };
+
+    if (res.status === 401 || res.status === 403) return { id, ok: false, kind: 'auth', status: res.status };
+    if (res.status === 429) return { id, ok: false, kind: 'rate_limit', status: res.status };
+    if (res.status >= 500) return { id, ok: false, kind: 'server', status: res.status };
+    return { id, ok: false, kind: 'http', status: res.status };
+  } catch (e) {
+    return { id, ok: false, kind: String(e).includes('timeout') ? 'timeout' : 'network' };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function applyProbeAdjustment(scored, probeResults) {
+  const byId = new Map(probeResults.map((x) => [x.id, x]));
+  for (const s of scored) {
+    const p = byId.get(s.id);
+    if (!p) continue;
+
+    if (p.ok) {
+      s.score += 120;
+      s.reason = `${s.reason} probe=ok`;
+      continue;
+    }
+
+    if (p.kind === 'auth') {
+      s.score -= 500;
+    } else if (p.kind === 'rate_limit') {
+      s.score -= 120;
+    } else if (p.kind === 'timeout' || p.kind === 'network' || p.kind === 'server') {
+      s.score -= 80;
+    } else {
+      s.score -= 40;
+    }
+    s.reason = `${s.reason} probe=${p.kind}`;
+  }
+}
+
+async function main() {
   if (!fs.existsSync(AUTH_PATH)) {
     console.error(`Auth file not found: ${AUTH_PATH}`);
     process.exit(1);
@@ -66,8 +120,17 @@ function main() {
   const base = chooseProfileCandidates(known);
 
   const scored = base.map((id) => scoreProfile(id, auth, now));
-  scored.sort((a, b) => b.score - a.score);
 
+  if (ENABLE_PROBE) {
+    const probeResults = [];
+    for (const s of scored) {
+      // serialize to avoid burst/429 amplification
+      probeResults.push(await probeProfileOAuth(s.id, s.profile));
+    }
+    applyProbeAdjustment(scored, probeResults);
+  }
+
+  scored.sort((a, b) => b.score - a.score);
   const newOrder = scored.map((x) => x.id);
 
   auth.order ||= {};
@@ -81,6 +144,7 @@ function main() {
   saveAuth(auth);
 
   console.log('Updated order:', newOrder.join(', '));
+  console.log(`Probe mode: ${ENABLE_PROBE ? 'ON' : 'OFF'}`);
   console.log('Scores:');
   for (const s of scored) {
     console.log(`- ${s.id}: ${s.score.toFixed(1)} (${s.reason || 'ok'})`);
