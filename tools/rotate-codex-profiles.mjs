@@ -10,7 +10,8 @@ const execFileAsync = promisify(execFile);
 const PROVIDER = 'openai-codex';
 const AUTH_PATH = path.join(os.homedir(), '.openclaw/agents/main/agent/auth-profiles.json');
 const ENABLE_PROBE = process.env.CODEX_ROTATE_PROBE !== '0'; // default ON
-const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 15000);
+const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 20000);
+const ORDER_TIMEOUT_MS = Number(process.env.CODEX_ORDER_TIMEOUT_MS || 90000);
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/root/.nvm/versions/node/v22.22.0/bin/openclaw';
 const PROBE_AGENT = process.env.CODEX_PROBE_AGENT || 'planner';
 const PROBE_MESSAGE = process.env.CODEX_PROBE_MESSAGE || '__codex_profile_probe__';
@@ -62,15 +63,26 @@ function scoreProfile(id, auth, now) {
 }
 
 async function setOrderForProbe(order) {
-  await execFileAsync(OPENCLAW_BIN, [
-    'models',
-    'auth',
-    'order',
-    'set',
-    '--provider',
-    PROVIDER,
-    ...order,
-  ], { timeout: PROBE_TIMEOUT_MS });
+  let lastErr;
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      await execFileAsync(OPENCLAW_BIN, [
+        'models',
+        'auth',
+        'order',
+        'set',
+        '--provider',
+        PROVIDER,
+        ...order,
+      ], { timeout: ORDER_TIMEOUT_MS });
+      return;
+    } catch (e) {
+      lastErr = e;
+      // retry once on timeout/kill
+      if (!(e?.killed || String(e?.message || '').toLowerCase().includes('timeout')) || i === 1) throw e;
+    }
+  }
+  if (lastErr) throw lastErr;
 }
 
 async function runCodexProbe() {
