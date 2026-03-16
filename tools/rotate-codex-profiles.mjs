@@ -18,12 +18,6 @@ function saveAuth(data) {
   fs.writeFileSync(AUTH_PATH, JSON.stringify(data, null, 2) + '\n');
 }
 
-const HEALTHY_PRIORITY = [
-  `${PROVIDER}:team1`,
-  `${PROVIDER}:team2`,
-  `${PROVIDER}:team3`,
-];
-
 function scoreProfile(id, auth, now) {
   const profile = auth.profiles?.[id];
   const stats = auth.usageStats?.[id] || {};
@@ -35,24 +29,19 @@ function scoreProfile(id, auth, now) {
   const disabled = disabledUntil > now;
   const cooling = cooldownUntil > now;
 
+  // 探针模式下，基础分只保留轻量兜底，不再做人为健康队列加权
   let score = 0;
-  const healthyIdx = HEALTHY_PRIORITY.indexOf(id);
-  if (healthyIdx >= 0 && !disabled) score += 300 - healthyIdx * 20;
-
-  if (!expired) score += 50;
-  if (!disabled) score += 40;
-  if (!cooling) score += 20;
+  if (!expired) score += 10;
+  if (!disabled) score += 10;
+  if (!cooling) score += 5;
 
   const err = Number(stats.errorCount || 0);
-  score -= Math.min(err, 50);
-
-  const lastUsed = Number(stats.lastUsed || 0);
-  if (lastUsed > 0) score += Math.min((now - lastUsed) / (1000 * 60 * 60), 8);
+  score -= Math.min(err, 20);
 
   return {
     id,
     score,
-    reason: `${healthyIdx >= 0 ? `healthy#${healthyIdx + 1} ` : ''}${expired ? 'expired ' : ''}${disabled ? 'disabled ' : ''}${cooling ? 'cooldown ' : ''}err=${err}`.trim(),
+    reason: `${expired ? 'expired ' : ''}${disabled ? 'disabled ' : ''}${cooling ? 'cooldown ' : ''}err=${err}`.trim(),
     profile,
   };
 }
