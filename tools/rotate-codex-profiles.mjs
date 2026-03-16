@@ -10,8 +10,9 @@ const execFileAsync = promisify(execFile);
 const PROVIDER = 'openai-codex';
 const AUTH_PATH = path.join(os.homedir(), '.openclaw/agents/main/agent/auth-profiles.json');
 const ENABLE_PROBE = process.env.CODEX_ROTATE_PROBE !== '0'; // default ON
-const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 20000);
+const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 60000);
 const ORDER_TIMEOUT_MS = Number(process.env.CODEX_ORDER_TIMEOUT_MS || 90000);
+const AGENT_PROBE_TIMEOUT_S = Number(process.env.CODEX_AGENT_PROBE_TIMEOUT_S || 90);
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || '/root/.nvm/versions/node/v22.22.0/bin/openclaw';
 const PROBE_AGENT = process.env.CODEX_PROBE_AGENT || 'planner';
 const PROBE_MESSAGE = process.env.CODEX_PROBE_MESSAGE || '__codex_profile_probe__';
@@ -89,7 +90,7 @@ async function runCodexProbe() {
   try {
     const { stdout, stderr } = await execFileAsync(
       OPENCLAW_BIN,
-      ['agent', '--agent', PROBE_AGENT, '--message', PROBE_MESSAGE, '--timeout', '20', '--json'],
+      ['agent', '--agent', PROBE_AGENT, '--message', PROBE_MESSAGE, '--timeout', String(AGENT_PROBE_TIMEOUT_S), '--json'],
       { timeout: PROBE_TIMEOUT_MS }
     );
     const text = `${stdout || ''}\n${stderr || ''}`;
@@ -127,6 +128,8 @@ function applyProbeAdjustment(scored, probeResults) {
   for (const s of scored) {
     const p = byId.get(s.id);
     if (!p) continue;
+
+    s.probeRaw = (p.raw || '').replace(/\s+/g, ' ').trim().slice(0, 160);
 
     if (p.ok) {
       s.score += 120;
@@ -197,6 +200,9 @@ async function main() {
   console.log('Scores:');
   for (const s of scored) {
     console.log(`- ${s.id}: ${s.score.toFixed(1)} (${s.reason || 'ok'})`);
+    if (s.reason?.includes('probe=timeout') && s.probeRaw) {
+      console.log(`  probe_raw: ${s.probeRaw}`);
+    }
   }
 }
 
