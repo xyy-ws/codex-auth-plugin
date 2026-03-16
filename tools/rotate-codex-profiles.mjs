@@ -7,6 +7,9 @@ import { chooseProfileCandidates } from '../profile-selector.mjs';
 const PROVIDER = 'openai-codex';
 const AUTH_PATH = path.join(os.homedir(), '.openclaw/agents/main/agent/auth-profiles.json');
 const ENABLE_PROBE = process.env.CODEX_ROTATE_PROBE !== '0'; // default ON
+const PROBE_TIMEOUT_MS = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 7000);
+const CODEX_PROBE_MODEL = process.env.CODEX_PROBE_MODEL || 'gpt-5-codex';
+const CODEX_PROBE_URL = process.env.CODEX_PROBE_URL || 'https://api.openai.com/v1/responses';
 
 function loadAuth() {
   return JSON.parse(fs.readFileSync(AUTH_PATH, 'utf8'));
@@ -45,23 +48,53 @@ function scoreProfile(id, auth, now) {
 }
 
 async function probeProfileOAuth(id, profile, stats, now) {
-  // Codex OAuth-native probe (no direct OpenAI API call):
-  // evaluate auth store semantics the same way OpenClaw uses profile usability.
   if (!profile) return { id, ok: false, kind: 'missing' };
 
+  const token = profile?.access;
+  if (!token) return { id, ok: false, kind: 'no_access' };
+
+  // quick local short-circuit before remote probe
   const expires = Number(profile.expires || 0);
-  const disabledUntil = Number(stats?.disabledUntil || 0);
-  const cooldownUntil = Number(stats?.cooldownUntil || 0);
-  const disabledReason = String(stats?.disabledReason || '');
-
-  if (!profile.access && !profile.refresh) return { id, ok: false, kind: 'no_access' };
   if (expires > 0 && expires <= now) return { id, ok: false, kind: 'auth' };
-  if (disabledUntil > now && (disabledReason === 'billing' || disabledReason === 'workspace_deactivated')) {
-    return { id, ok: false, kind: disabledReason };
-  }
-  if (cooldownUntil > now) return { id, ok: false, kind: 'rate_limit' };
 
-  return { id, ok: true, kind: 'ok' };
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort('timeout'), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(CODEX_PROBE_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: CODEX_PROBE_MODEL,
+        input: 'ping',
+        max_output_tokens: 1,
+      }),
+      signal: ac.signal,
+    });
+
+    if (res.ok) return { id, ok: true, kind: 'ok', status: res.status };
+
+    let bodyText = '';
+    try { bodyText = await res.text(); } catch {}
+    const lower = bodyText.toLowerCase();
+
+    if (res.status === 401 || res.status === 403) return { id, ok: false, kind: 'auth', status: res.status };
+    if (res.status === 429) return { id, ok: false, kind: 'rate_limit', status: res.status };
+    if (res.status === 402 || lower.includes('insufficient') || lower.includes('billing')) {
+      return { id, ok: false, kind: 'billing', status: res.status };
+    }
+    if (lower.includes('workspace deactivated') || lower.includes('deactivated_workspace')) {
+      return { id, ok: false, kind: 'workspace_deactivated', status: res.status };
+    }
+    if (res.status >= 500) return { id, ok: false, kind: 'server', status: res.status };
+    return { id, ok: false, kind: 'http', status: res.status };
+  } catch (e) {
+    return { id, ok: false, kind: String(e).includes('timeout') ? 'timeout' : 'network' };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 function applyProbeAdjustment(scored, probeResults) {
